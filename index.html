@@ -1,15 +1,15 @@
 <!doctype html>
 <meta charset="utf-8" />
-<title>Sum Value Fields from Pasted Text (Light Theme, First Number Only)</title>
+<title>Text Field Number Extractor (N‑th token, exact decimals)</title>
 <style>
-  /* Force light theme, high contrast */
-  html, body { background: #ffffff; color: #000000; }
-  body { font-family: system-ui, Segoe UI, Roboto, Arial, sans-serif; margin: 2rem; line-height: 1.45; }
-  h1 { margin: .2rem 0 1rem; }
+  /* Light theme, high contrast */
+  html, body { background:#fff; color:#000; }
+  body { font-family: system-ui, Segoe UI, Roboto, Arial, sans-serif; margin:2rem; line-height:1.45; }
+  h1 { margin:.2rem 0 1rem; }
   .row { display:flex; gap:.75rem; align-items:center; flex-wrap:wrap; margin-bottom:.75rem; }
-  textarea { width: 100%; min-height: 40vh; padding: .75rem; border-radius: 8px; border: 1px solid #9994;
+  textarea { width:100%; min-height:42vh; padding:.75rem; border-radius:8px; border:1px solid #9994;
              font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background:#fff; color:#000; }
-  button { padding: .5rem .9rem; border-radius: 6px; border: 1px solid #8885; background: #f3f3f3; color:#000; cursor: pointer; }
+  button { padding:.5rem .9rem; border-radius:6px; border:1px solid #8885; background:#f3f3f3; color:#000; cursor:pointer; }
   button:disabled { opacity:.5; cursor:not-allowed; }
   .muted { color:#333; }
   .ok { color:#0a7a0a; }
@@ -17,29 +17,45 @@
   pre { background:#fafafa; color:#000; padding:1rem; border-radius:6px; overflow:auto; border:1px solid #eee; }
   code.badge { background:#eee; padding:.1rem .35rem; border-radius:4px; }
   input, select { background:#fff; color:#000; border:1px solid #ccc; padding:.35rem .5rem; border-radius:6px; }
+  input[type="number"] { width:5.5rem; }
 </style>
 
-<h1>Sum <code class="badge">Value Fields</code> from Pasted Text</h1>
+<h1>Text Field Number Extractor</h1>
+
 <p class="muted">
-  Paste your text below. The tool finds <b>Value Fields (case‑insensitive) and sums <b>the first integer number token</b> that appears
-  after the key on the same line. (Examples: <code>_KrT 8,00 ... → 8</code>, <code>_KrT: 1.234 → 1234</code>).
+  Paste text below, specify a <b>key</b>, and this tool will locate each line containing that key and extract the
+  <b>N‑th number</b> that appears after it.  
+  Supports <b>integers and decimals</b>, handles thousands separators, and performs <b>exact decimal summation</b>
+  using BigInt scaling (no floating‑point errors).  
+  Choose your <b>decimal separator</b> and pattern matching mode.
 </p>
 
 <div class="row">
   <label>Key:
-    <input id="key" value="_KrT" style="width:10rem;">
+    <input id="key" value="key" />
   </label>
 
   <label>Pattern:
     <select id="mode">
-      <option value="strict">strict (key followed by := and number)</option>
-      <option value="loose" selected>loose (take the first number after key on the same line)</option>
+      <option value="strict">strict (requires <code>:</code> or <code>=</code> after key)</option>
+      <option value="loose" selected>loose (numbers anywhere to the right on the same line)</option>
+    </select>
+  </label>
+
+  <label>N‑th number:
+    <input id="nth" type="number" min="1" step="1" value="1" />
+  </label>
+
+  <label>Decimal separator:
+    <select id="decSep">
+      <option value="," selected>Comma “,”</option>
+      <option value=".">Dot “.”</option>
     </select>
   </label>
 
   <label>
     <input type="checkbox" id="multiline" checked>
-    multi-line text (default)
+    multi-line text
   </label>
 
   <button id="scanBtn">Scan</button>
@@ -52,121 +68,149 @@
 <div id="out"></div>
 
 <script>
-/* ===== Integer parsing (keeps sign, ignores decimals) =====
-   Accepts:
-     1,234   -> 1234
-     1.234   -> 1234
-     1 234   -> 1234
-     -1_234  -> -1234
-     8,00    -> 8   (decimal part dropped by design)
-*/
-function coerceIntegerToken(s) {
-  if (!s) throw new Error("empty token");
-  s = String(s).trim();
-
-  // Optional leading sign
-  let sign = 1;
-  if (s.startsWith("+")) { s = s.slice(1); }
-  else if (s.startsWith("-")) { sign = -1; s = s.slice(1); }
-
-  // If a decimal separator exists, strip the fractional part (you said values are whole)
-  const decIdx = Math.max(s.lastIndexOf(","), s.lastIndexOf("."));
-  if (decIdx >= 0) s = s.slice(0, decIdx);
-
-  // Remove thousand separators and spacing-like chars
-  s = s.replace(/[,\.\s_'’]/g, "");
-
-  if (!/^\d+$/.test(s)) throw new Error("not an integer token");
-  return sign * parseInt(s, 10);
-}
-
-/* ===== Tokenizer: FIRST number after the key (not greedy) =====
-   We do not let regex gobble multiple numbers.
-   We find the key, slice the line to the right, and then match the FIRST numeric token only.
-*/
-function firstNumberTokenAfter(textRight) {
-  // A number token: optional sign + digits with optional thousand separators, optional decimals.
-  // We capture only the token; no spaces allowed inside beyond separators.
-  const re = /^[^\S\r\n]*[:=]?[^\S\r\n]*([+\-]?\d[\d _'’]*?(?:[.,]\d+)?)/i;
-  const m = re.exec(textRight);
-  return m ? m[1] : null;
-}
-
-/* Build a case-insensitive regex for the key, with word boundary-ish behavior. */
+/* ===== Key location (case-insensitive, boundary-ish) ===== */
 function keyRegex(key) {
   const esc = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  // Use \b where it works, plus allow _ to be part of the word.
   return new RegExp(`(^|[^A-Za-z0-9_])(${esc})(?![A-Za-z0-9_])`, "i");
 }
 
-/* Main scan per line */
-function scanLine(line, key, mode) {
-  const kRe = keyRegex(key);
-  const m = kRe.exec(line);
-  if (!m) return null;
-
-  const idxAfterKey = m.index + m[0].length; // end of the delimiter+key match
-  const right = line.slice(idxAfterKey);
-
-  let token = null;
-  if (mode === "strict") {
-    // Require := before the number token
-    const m2 = right.match(/^[^\S\r\n]*[:=][^\S\r\n]*([+\-]?\d[\d _'’]*?(?:[.,]\d+)?)/);
-    token = m2 ? m2[1] : null;
-  } else {
-    // Loose: take the first number token that appears after the key
-    token = firstNumberTokenAfter(right);
-  }
-
-  if (!token) return null;
-
-  try {
-    const value = coerceIntegerToken(token);
-    return { value, raw: token };
-  } catch {
-    return null;
-  }
+/* ===== Build a number-token pattern based on chosen decimal separator ===== */
+function buildTokenPieces(decSep) {
+  const ds = decSep === "," ? "," : "\\.";
+  const other = decSep === "," ? "\\." : ",";
+  const thousands = `[\\s_'’${other}]`;
+  const intPart = `(?:\\d{1,3}(?:${thousands}?\\d{3})+|\\d+)`;
+  const fracPart = `(?:${ds}\\d+)?`;
+  const token = `[+\\-]?${intPart}${fracPart}`;
+  return { token, ds, other };
 }
 
-function scanText(text, key, mode, multiline=true) {
-  if (!text) return { matches: [], sum: 0 };
+/* ===== Extract the N-th token after the key ===== */
+function extractNthTokenRightOf(lineRight, decSep, nth, strict) {
+  const { token } = buildTokenPieces(decSep);
+  const tokenRe = new RegExp(token, "g");
+
+  let search = lineRight;
+  if (strict) {
+    const sign = /[:=]/.exec(lineRight);
+    if (!sign) return null;
+    search = lineRight.slice(sign.index + 1);
+  }
+
+  let i = 0, m;
+  while ((m = tokenRe.exec(search)) !== null) {
+    i++;
+    if (i === nth) return m[0];
+    if (m.index === tokenRe.lastIndex) tokenRe.lastIndex++;
+  }
+  return null;
+}
+
+/* ===== Unified number parser (integer OR decimal) ===== */
+function parseDecimalOrInteger(token, decSep) {
+  token = String(token).trim();
+  let sign = 1n;
+  if (token.startsWith("+")) token = token.slice(1);
+  else if (token.startsWith("-")) { sign = -1n; token = token.slice(1); }
+
+  const other = decSep === "," ? "\\." : ",";
+  token = token.replace(new RegExp(`[\\s_'’${other}]`, "g"), "");
+  const isDecimal = token.includes(decSep);
+
+  if (!isDecimal) {
+    if (!/^\d+$/.test(token)) throw new Error("invalid integer");
+    return { scaled: BigInt(token) * sign, scale: 0 };
+  }
+
+  const idx = token.lastIndexOf(decSep);
+  let intPart = token.slice(0, idx);
+  let fracPart = token.slice(idx + 1);
+
+  if (!/^\d*$/.test(intPart) || !/^\d+$/.test(fracPart))
+    throw new Error("invalid decimal");
+
+  if (intPart === "") intPart = "0";
+  const MAX_DEC = 12;
+  fracPart = fracPart.slice(0, MAX_DEC);
+
+  const scale = fracPart.length;
+  const intBI = BigInt(intPart);
+  const fracBI = BigInt(fracPart);
+  const scaled = (intBI * (10n ** BigInt(scale)) + fracBI) * sign;
+
+  return { scaled, scale };
+}
+
+/* ===== Exact summation for mixed integers + decimals ===== */
+function sumMixedNumbers(values) {
+  if (!values.length) return { scaled: 0n, scale: 0 };
+  const maxScale = values.reduce((m, v) => Math.max(m, v.scale), 0);
+  let total = 0n;
+  for (const v of values)
+    total += v.scaled * (10n ** BigInt(maxScale - v.scale));
+  return { scaled: total, scale: maxScale };
+}
+
+/* ===== Format scaled number back to string ===== */
+function formatScaled({ scaled, scale }, decSep) {
+  const sign = scaled < 0n ? "-" : "";
+  let s = (scaled < 0n ? -scaled : scaled).toString();
+  if (scale === 0) return sign + s;
+  if (s.length <= scale)
+    s = "0".repeat(scale - s.length + 1) + s;
+  const intStr = s.slice(0, s.length - scale);
+  const fracStr = s.slice(s.length - scale);
+  return sign + intStr + decSep + fracStr;
+}
+
+/* ===== Main scan routine ===== */
+function scanText(text, key, patternMode, nth, decSep, multiline = true) {
   const lines = multiline ? text.split(/\r?\n/) : [text];
-  const matches = [];
-  let sum = 0;
+  const matches = [], parts = [];
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
-    const hit = scanLine(line, key, mode);
-    if (hit) {
-      matches.push({ lineNo: i+1, line, value: hit.value, raw: hit.raw });
-      sum += hit.value; // pure integer addition
-    }
+    const km = keyRegex(key).exec(line);
+    if (!km) continue;
+
+    const right = line.slice(km.index + km[0].length);
+    const token = extractNthTokenRightOf(right, decSep, nth, patternMode === "strict");
+    if (!token) continue;
+
+    try {
+      const val = parseDecimalOrInteger(token, decSep);
+      matches.push({ lineNo: i + 1, line, raw: token, valueScaled: val });
+      parts.push(val);
+    } catch {}
   }
-  return { matches, sum };
+
+  return { matches, total: sumMixedNumbers(parts) };
 }
 
-/* ---------- UI wiring ---------- */
+/* ===== UI ===== */
 const txt = document.getElementById("txt");
 const keyEl = document.getElementById("key");
 const modeEl = document.getElementById("mode");
+const nthEl = document.getElementById("nth");
+const decSepEl = document.getElementById("decSep");
 const multiEl = document.getElementById("multiline");
 const scanBtn = document.getElementById("scanBtn");
 const copyBtn = document.getElementById("copyBtn");
 const statusEl = document.getElementById("status");
 const outEl = document.getElementById("out");
 
-function fmt(n) { return Number.isFinite(n) ? n.toString() : String(n); }
-
-function renderResult(res, key) {
+function renderResult(res, key, decSep, nth) {
   const lines = [];
   if (!res.matches.length) {
-    lines.push(`[--] no occurrences of '${key}' found`);
+    lines.push(`[--] no matches for key '${key}'`);
   } else {
     for (const m of res.matches) {
-      lines.push(`[OK] line ${m.lineNo}  value: ${fmt(m.value)}  (raw: "${m.raw}")`);
+      const s = formatScaled(m.valueScaled, decSep);
+      lines.push(`[OK] line ${m.lineNo}  value (N=${nth}): ${s}  (token: "${m.raw}")`);
       lines.push(`     ${m.line}`);
     }
-    lines.push(`\n=== GRAND TOTAL for '${key}': ${fmt(res.sum)} ===`);
+    const totalStr = formatScaled(res.total, decSep);
+    lines.push(`\n=== TOTAL for key '${key}' (N=${nth}): ${totalStr} ===`);
   }
   outEl.innerHTML = "<pre>"+lines.join("\n")+"</pre>";
   copyBtn.disabled = false;
@@ -175,26 +219,26 @@ function renderResult(res, key) {
 
 let lastRendered = "";
 scanBtn.addEventListener("click", () => {
-  const key = (keyEl.value || "_KrT").trim();
+  const key = (keyEl.value || "key").trim();
   const mode = modeEl.value;
+  const nth = Math.max(1, parseInt(nthEl.value || "1", 10));
+  const decSep = decSepEl.value;
   const multiline = multiEl.checked;
-  statusEl.textContent = `Scanning (${mode}, ${multiline ? "multi-line" : "single-line"})…`;
+
+  statusEl.textContent = `Scanning (${mode}, N=${nth}, dec='${decSep}')…`;
   try {
-    const res = scanText(txt.value, key, mode, multiline);
-    lastRendered = renderResult(res, key);
+    const res = scanText(txt.value, key, mode, nth, decSep, multiline);
+    lastRendered = renderResult(res, key, decSep, nth);
     statusEl.innerHTML = `<span class="ok">Done.</span>`;
   } catch (e) {
-    statusEl.innerHTML = `<span class="err">Error: ${e?.message || e}</span>`;
+    statusEl.innerHTML = `<span class="err">Error: ${e.message}</span>`;
   }
 });
 
 copyBtn.addEventListener("click", () => {
   if (!lastRendered) return;
-  navigator.clipboard.writeText(lastRendered).then(() => {
-    statusEl.innerHTML = `<span class="ok">Results copied to clipboard.</span>`;
-  }).catch(() => {
-    statusEl.innerHTML = `<span class="err">Could not copy to clipboard.</span>`;
-  });
+  navigator.clipboard.writeText(lastRendered)
+    .then(() => statusEl.innerHTML = `<span class="ok">Copied.</span>`)
+    .catch(() => statusEl.innerHTML = `<span class="err">Copy failed.</span>`);
 });
 </script>
-``
