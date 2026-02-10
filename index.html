@@ -32,7 +32,7 @@
 
 <div class="row">
   <label>Key:
-    <input id="key" value="key" />
+    <input id="key" value="KRT" />
   </label>
 
   <label>Pattern:
@@ -62,7 +62,51 @@
   <button id="copyBtn" disabled>Copy results</button>
 </div>
 
-<textarea id="txt" placeholder="Paste your plain text here..."></textarea>
+<textarea id="txt" placeholder="Paste your plain text here...">DEMO — Example scan text
+=====================================
+This example shows common cases. Try different settings above and press "Scan".
+
+• Use case A — Loose mode, N=1, decimal separator = comma (,)
+  KRT 8,00 1615 43,67 4000 0,88 850 17,00 860 5,00
+  -> Captures the first number after the key: 8,00
+
+• Use case B — Loose mode, N=2 (second number), decimal separator = comma
+  KRT 8,00 1615 43,67
+  -> With N=2 captures 1615
+
+• Use case C — Strict mode with ":" (Mode=strict), N=1, decimal separator = comma
+  KRT: 12,50 widgets
+  -> Requires ':' or '=' after the key; captures 12,50
+
+• Use case D — Strict mode with "=", thousands spacing, decimal separator = comma
+  KRT = 1 234,75
+  -> Space is treated as thousands separator; captures 1 234,75
+
+• Use case E — Dot decimals (set decimal separator = dot ".")
+  KRT 3.25 apples
+  -> Captures 3.25
+
+• Use case F — Integers and negatives (no decimal part)
+  KRT 2000
+  KRT: -150
+  -> Captures 2000 and -150 correctly
+
+• Use case G — N‑th number selection (Mode=strict)
+  KRT: 10 20 30
+  -> With N=3 captures 30
+
+• Use case H — Other thousands separators ignored (with comma decimal)
+  KRT 1.234,00
+  KRT 1'234,5
+  KRT 1_234,75
+  -> Dot/apostrophe/underscore are treated as thousands separators
+
+• Use case I — Only lines that contain the key are counted
+  NO_KEY 999
+  -> Ignored
+
+Now press the "Scan" button above to see the matches and the total.
+</textarea>
 
 <p id="status" class="muted">Ready.</p>
 <div id="out"></div>
@@ -85,7 +129,10 @@ function buildTokenPieces(decSep) {
   return { token, ds, other };
 }
 
-/* ===== Extract the N-th token after the key ===== */
+/* ===== Extract the N-th token after the key =====
+   - Loose: count tokens anywhere to the right
+   - Strict: require the first ':' or '=' after key; count tokens after it
+*/
 function extractNthTokenRightOf(lineRight, decSep, nth, strict) {
   const { token } = buildTokenPieces(decSep);
   const tokenRe = new RegExp(token, "g");
